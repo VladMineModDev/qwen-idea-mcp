@@ -1,0 +1,14 @@
+[project]
+name = "qwen-idea-mcp"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "pyautogui>=0.9.54",
+    "mss>=9.0.1",
+    "pygetwindow>=0.0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
