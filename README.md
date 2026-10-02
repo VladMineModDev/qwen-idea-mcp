@@ -38,7 +38,7 @@
 ### 1. Установка
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/qwen-idea-mcp.git
+git clone https://github.com/VladMineModDev/qwen-idea-mcp.git
 cd qwen-idea-mcp
 python -m venv .venv
 .venv\Scripts\activate  # Windows
@@ -64,7 +64,7 @@ git init
 git add .
 git commit -m "Initial commit: MCP server for Minecraft mod development"
 
-# Подключение к GitHub (замени YOUR_USERNAME на свой ник)
-git remote add origin https://github.com/YOUR_USERNAME/qwen-idea-mcp.git
+# Подключение к GitHub (замени VladMineModDev на свой ник)
+git remote add origin https://github.com/VladMineModDev/qwen-idea-mcp.git
 git branch -M main
 git push -u origin main
