@@ -238,7 +238,7 @@ def _decode_bytes(b: bytes) -> str:
 
 # ---------- файлы ----------
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def ping() -> str:
     """Проверка связи + состояние конфигурации."""
@@ -251,7 +251,7 @@ def ping() -> str:
     return msg
 
 
-@mcp.tool(annotations=A_CONF)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def configure(project_root: str, java_home: str = "", idea_path: str = "",
               loader: str = "") -> str:
@@ -291,7 +291,7 @@ def configure(project_root: str, java_home: str = "", idea_path: str = "",
             f"java={DEFAULT_JAVA_HOME or 'NOT DETECTED'} | loader={CFG['loader']}.{warn}")
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def list_files(rel_dir: str = "", pattern: str = "**/*") -> str:
     """Список файлов в директории проекта (относительно корня)."""
@@ -307,7 +307,7 @@ def list_files(rel_dir: str = "", pattern: str = "**/*") -> str:
     return "\n".join(items[:500]) or "(empty)"
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def read_file(rel_path: str, max_bytes: int = 200_000) -> str:
     """Прочитать содержимое файла проекта."""
@@ -321,7 +321,7 @@ def read_file(rel_path: str, max_bytes: int = 200_000) -> str:
     return text
 
 
-@mcp.tool(annotations=A_OVERWRITE)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False))
 @traced
 def write_file(rel_path: str, content: str) -> str:
     """Создать новый файл или полностью перезаписать существующий (старая версия уходит в backup)."""
@@ -338,7 +338,7 @@ def write_file(rel_path: str, content: str) -> str:
     return msg
 
 
-@mcp.tool(annotations=A_DESTR)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 @traced
 def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = False) -> str:
     """Точечная замена фрагмента текста. Ошибка, если фрагмент не найден или неоднозначен."""
@@ -362,7 +362,7 @@ def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = 
     return f"OK: replaced {count if replace_all else 1} occurrence(s) in {rel_path} | backup: {b}"
 
 
-@mcp.tool(annotations=A_DESTR)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 @traced
 def delete_file(rel_path: str) -> str:
     """Удалить файл (сначала копия в backup)."""
@@ -375,7 +375,7 @@ def delete_file(rel_path: str) -> str:
     return f"OK: deleted {rel_path} | backup: {b}"
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def grep(pattern: str, rel_dir: str = "", file_glob: str = "*.java",
          case_sensitive: bool = False, max_results: int = 50) -> str:
@@ -454,7 +454,7 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
     return f"exit={code} | full log: {log_path}\n--- tail ---\n{tail}{hint}"
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def client_status() -> str:
     """Жив ли фоновый процесс runClient."""
@@ -465,7 +465,7 @@ def client_status() -> str:
             f"alive={_pid_alive(st['pid'])} log={st.get('log')}")
 
 
-@mcp.tool(annotations=A_DESTR_OPEN)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 @traced
 def stop_client() -> str:
     """Остановить фоновый runClient (вместе с дочерними процессами)."""
@@ -478,7 +478,7 @@ def stop_client() -> str:
     return f"OK: killed pid {st['pid']} tree."
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
              filter_regex: str = "") -> str:
@@ -519,7 +519,7 @@ def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
 
 # ---------- GUI ----------
 
-@mcp.tool(annotations=A_READ_OPEN)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def screenshot(target: str = "minecraft", save_path: str = "") -> str:
     """Скриншот окна (target: 'minecraft' | 'idea' | 'screen' | подстрока заголовка).
@@ -550,7 +550,7 @@ def screenshot(target: str = "minecraft", save_path: str = "") -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool(annotations=A_OPEN_IDEM)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def focus_window(title: str) -> str:
     """Вывести окно на передний план по заголовку."""
@@ -567,7 +567,7 @@ def focus_window(title: str) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool(annotations=A_OPEN_IDEM)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def maximize_window(title: str) -> str:
     """Развернуть окно на весь экран."""
@@ -583,7 +583,7 @@ def maximize_window(title: str) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool(annotations=A_READ_OPEN)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def list_windows(filter_text: str = "") -> str:
     """Список заголовков открытых окон (опционально фильтр по подстроке)."""
@@ -593,7 +593,7 @@ def list_windows(filter_text: str = "") -> str:
     return "\n".join(titles[:50]) or "(no windows)"
 
 
-@mcp.tool(annotations=A_OPEN_ACT)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 @traced
 def press_key(keys: str, interval: float = 0.1) -> str:
     """Нажать клавишу или комбинацию (например: 'f5', 'ctrl+s', 'enter')."""
@@ -605,7 +605,7 @@ def press_key(keys: str, interval: float = 0.1) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool(annotations=A_OPEN_ACT)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 @traced
 def type_text(text: str, interval: float = 0.03) -> str:
     """Набрать текст с клавиатуры (команды в игре, поля ввода). Только латиница/ASCII."""
@@ -616,7 +616,7 @@ def type_text(text: str, interval: float = 0.03) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool(annotations=A_OPEN_ACT)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 @traced
 def click_at(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
     """Кликнуть по координатам экрана (button: 'left' | 'right' | 'middle')."""
@@ -627,7 +627,7 @@ def click_at(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool(annotations=A_READ_OPEN)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def get_mouse_position() -> str:
     """Получить текущие координаты мыши."""
@@ -635,7 +635,7 @@ def get_mouse_position() -> str:
     return f"Mouse at ({x}, {y})"
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def wait(seconds: float = 5.0) -> str:
     """Пауза между действиями (ожидание загрузки мира и т.п.), максимум 120 сек."""
@@ -643,7 +643,7 @@ def wait(seconds: float = 5.0) -> str:
     return f"OK: waited {seconds}s"
 
 
-@mcp.tool(annotations=A_OPEN_ACT)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 @traced
 def open_idea(project: str = "") -> str:
     """Открыть проект в IntelliJ IDEA (путь из конфига / автодетект)."""
@@ -658,7 +658,7 @@ def open_idea(project: str = "") -> str:
     return f"OK: opening IDEA for {root}"
 
 
-@mcp.tool(annotations=A_OPEN_IDEM)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def show_in_idea(rel_path: str, line: int = 0) -> str:
     """Открыть файл в запущенной IntelliJ IDEA (чтобы человек видел правку вживую)."""
@@ -672,7 +672,7 @@ def show_in_idea(rel_path: str, line: int = 0) -> str:
     return f"OK: asked IDEA to open {rel_path}" + (f" line {line}" if line else "")
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def recent_activity(lines: int = 30) -> str:
     """Журнал вызовов сервера (кто, что и когда вызвал) — живое наблюдение за работой ИИ."""
@@ -682,7 +682,7 @@ def recent_activity(lines: int = 30) -> str:
     return "\n".join(ls[-lines:])
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def ai_events(last_n: int = 20, file_filter: str = "") -> str:
     """Структурный журнал действий ИИ (jsonl): tool, file, lines, summary.
@@ -695,7 +695,7 @@ def ai_events(last_n: int = 20, file_filter: str = "") -> str:
     return "\n".join(ls[-last_n:]) or "(empty)"
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def project_brief() -> str:
     """Динамическое досье проекта: загрузчик, mod id, пакеты, ресурсы.
@@ -774,7 +774,7 @@ def _probe(rd) -> list:
     return out or [{"loader": "unknown"}]
 
 
-@mcp.tool(annotations=A_READ)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def probe_mod(target: str) -> str:
     """Определить формат мода (.jar или папка исходников): загрузчик, modId, версия, версия MC.

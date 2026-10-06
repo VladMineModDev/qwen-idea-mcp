@@ -31,3 +31,8 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+ai_events.jsonl
+ai_decisions.jsonl
+
+ai_events.jsonl
+ai_decisions.jsonl
