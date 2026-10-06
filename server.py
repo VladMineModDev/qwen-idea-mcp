@@ -1,46 +1,115 @@
 """
-Qwen <-> IntelliJ IDEA MCP server. v4
-Фикс stdio (stdin=DEVNULL у всех дочерних процессов) + чёрный ящик server_debug.log.
+qwen-idea-mcp v1.5 — MCP-сервер для ИИ-разработки Minecraft-модов (NeoForge/Fabric/Forge)
+через IntelliJ IDEA: файлы с бэкапами, Gradle, логи/краш-репорты, GUI-автоматизация,
+детект формата мода (probe_mod).
+Конфигурация: mod_config.json (или env QWEN_MCP_CONFIG), автодетект JAVA_HOME и IDEA.
+Транспорты: python server.py sse | streamable-http | stdio
 """
-import inspect
+import base64
 import functools
+import inspect
 import json
 import os
 import re
 import shutil
 import subprocess
 import time
-import pyautogui
-import mss
-import pygetwindow as gw
+import tomllib
+import zipfile
 from pathlib import Path
 
 import anyio
+import mss
+import pyautogui
+import pygetwindow as gw
 from mcp.server.fastmcp import FastMCP
 
-PROJECT_ROOT = Path(r"C:\Your\Path\To\Mod").resolve()
+# ---------- конфигурация: в коде нет личных путей ----------
 SERVER_ROOT = Path(__file__).resolve().parent
 BACKUP_ROOT = SERVER_ROOT / "backups"
 LOG_ROOT = SERVER_ROOT / "logs"
 STATE_FILE = SERVER_ROOT / "state.json"
 DEBUG_LOG = SERVER_ROOT / "server_debug.log"
-DEFAULT_JAVA_HOME = r"C:\Path\To\JDK-21"
+CONFIG_FILE = Path(os.environ.get("QWEN_MCP_CONFIG",
+                                  str(SERVER_ROOT / "mod_config.json")))
+
+
+def _detect_java_home() -> str:
+    env = os.environ.get("JAVA_HOME", "")
+    if env and Path(env).is_dir():
+        return env
+    g = Path.home() / ".gradle" / "jdks"
+    if g.is_dir():
+        for d in sorted((x for x in g.iterdir() if x.is_dir()), reverse=True):
+            if (d / "bin" / "java.exe").is_file():
+                return str(d)
+    return ""
+
+
+def _detect_idea_exe() -> str:
+    custom = os.environ.get("IDEA_PATH", "")
+    if custom and Path(custom).is_file():
+        return custom
+    roots = [Path(r"C:\Program Files\JetBrains"),
+             Path.home() / "AppData" / "Local" / "JetBrains" / "Toolbox" / "apps"]
+    for base in roots:
+        if not base.is_dir():
+            continue
+        for d in sorted(base.glob("**/IntelliJ IDEA*"), reverse=True):
+            cand = d / "bin" / "idea64.exe"
+            if cand.is_file():
+                return str(cand)
+    return ""
+
+
+def _load_config() -> dict:
+    cfg = {
+        "loader": "neoforge",
+        "project_root": "",
+        "java_home": "",
+        "idea_path": "",
+        "host": "127.0.0.1",
+        "port": 8765,
+        "logs": {
+            "client_latest": "run/client/logs/latest.log",
+            "client_debug": "run/client/logs/debug.log",
+            "crash_dirs": ["run/client/crash-reports", "run/crash-reports"],
+        },
+    }
+    if CONFIG_FILE.is_file():
+        try:
+            cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    if not cfg["java_home"]:
+        cfg["java_home"] = _detect_java_home()
+    if not cfg["idea_path"]:
+        cfg["idea_path"] = _detect_idea_exe()
+    return cfg
+
+
+CFG = _load_config()
+PROJECT_ROOT = (Path(CFG["project_root"]).resolve()
+                if CFG["project_root"] else SERVER_ROOT)
+DEFAULT_JAVA_HOME = CFG["java_home"]
 
 SKIP_DIRS = {".git", ".gradle", ".idea", "build", "run", "out"}
 WRITE_DENY_DIRS = SKIP_DIRS | {"gradle"}
 WRITE_DENY_FILES = {"gradlew", "gradlew.bat"}
 
 SERVER_INSTRUCTIONS = (
-    "MCP-сервер разработки Minecraft-мода (NeoForge 1.21.1) в IntelliJ IDEA. "
+    "MCP-сервер разработки Minecraft-мода (NeoForge/Fabric) в IntelliJ IDEA. "
+    "Первый запуск: если ping показывает WARNING или чужой путь — спроси у пользователя "
+    "абсолютный путь к проекту мода и вызови configure(project_root=...). "
     "Основной цикл: grep/read_file -> patch_file/write_file -> run_gradle('compileJava') -> "
     "stop_client() -> run_gradle('runClient', background=True) -> wait(45) -> "
     "get_logs(source='run', filter_regex='ERROR|Exception') -> screenshot(target='minecraft'). "
-    "Правила: перед patch_file всегда read_file (точное совпадение фрагмента); "
-    "runClient ТОЛЬКО с background=True; перед новым runClient всегда stop_client(); "
-    "краш-репорты читать с mode='head'; бэкапы правок автоматические в qwen-idea-mcp/backups."
+    "Правила: перед patch_file всегда read_file; runClient ТОЛЬКО с background=True; "
+    "перед новым runClient всегда stop_client(); краш-репорты с mode='head'; "
+    "бэкапы правок автоматические; после важной правки вызывай show_in_idea."
 )
 
-mcp = FastMCP("qwen-idea-mcp", host="127.0.0.1", port=8765,
+mcp = FastMCP("qwen-idea-mcp", host=CFG["host"], port=CFG["port"],
               instructions=SERVER_INSTRUCTIONS)
 
 
@@ -52,7 +121,6 @@ def _dbg(msg: str):
 
 
 def traced(fn):
-    """Логирует START/END/EXC каждого вызова инструмента в server_debug.log."""
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def awrapper(*a, **kw):
@@ -126,13 +194,66 @@ def _pid_alive(pid: int) -> bool:
     return str(pid).encode() in out
 
 
+def _decode_bytes(b: bytes) -> str:
+    """Пробуем UTF-8, fallback на cp1251 (Windows-консоли пишут кириллицу в cp1251)."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("cp1251", errors="replace")
+
+
 # ---------- файлы ----------
 
 @mcp.tool()
 @traced
 def ping() -> str:
-    """Проверка связи с MCP-сервером."""
-    return f"pong | project={PROJECT_ROOT}"
+    """Проверка связи + состояние конфигурации."""
+    msg = f"pong | loader={CFG['loader']} | project={PROJECT_ROOT}"
+    if not CFG["project_root"]:
+        msg += (" | WARNING: project_root not set — спроси у пользователя путь "
+                "к проекту мода и вызови configure(project_root=...)")
+    if not DEFAULT_JAVA_HOME:
+        msg += " | WARNING: java_home not detected — задай в mod_config.json или JAVA_HOME"
+    return msg
+
+
+@mcp.tool()
+@traced
+def configure(project_root: str, java_home: str = "", idea_path: str = "",
+              loader: str = "") -> str:
+    """Первичная настройка (один раз): сохранить пути в mod_config.json и применить
+    без перезапуска демона. ИИ: спроси у пользователя абсолютный путь к проекту мода
+    и вызови этот инструмент."""
+    global PROJECT_ROOT, DEFAULT_JAVA_HOME
+    p = Path(project_root).resolve()
+    if not p.is_dir():
+        return f"ERROR: directory not found: {project_root}"
+    warn = ""
+    if not (p / "gradlew.bat").is_file() and not (p / "gradlew").is_file():
+        warn = (" WARNING: в папке нет gradlew — точно корень проекта мода? "
+                "Конфиг сохранён, но gradle-задачи не запустятся.")
+    data = {}
+    if CONFIG_FILE.is_file():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["project_root"] = str(p)
+    if java_home:
+        data["java_home"] = java_home
+    if idea_path:
+        data["idea_path"] = idea_path
+    if loader:
+        data["loader"] = loader
+    CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+    new = _load_config()
+    CFG.clear()
+    CFG.update(new)
+    PROJECT_ROOT = Path(CFG["project_root"]).resolve()
+    DEFAULT_JAVA_HOME = CFG["java_home"]
+    return (f"OK: config saved to {CONFIG_FILE} | project={PROJECT_ROOT} | "
+            f"java={DEFAULT_JAVA_HOME or 'NOT DETECTED'} | loader={CFG['loader']}.{warn}")
 
 
 @mcp.tool()
@@ -242,17 +363,16 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
                      java_home: str = "") -> str:
     """Запустить задачу gradle (build, compileJava, runClient...).
     background=True — отделить процесс (для runClient), вывод идёт в logs/run_*.log."""
+    jh = java_home or DEFAULT_JAVA_HOME
+    if not jh:
+        return "ERROR: java_home not set: задай в mod_config.json или переменную JAVA_HOME"
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env["JAVA_HOME"] = java_home or DEFAULT_JAVA_HOME
+    env["JAVA_HOME"] = jh
     cmd = ["cmd", "/c", "gradlew.bat", *task.split()]
     log_path = LOG_ROOT / f"{'run' if background else 'gradle'}_{time.strftime('%Y%m%d-%H%M%S')}.log"
-    
-    # Открываем файл, но НЕ закрываем — пусть живёт (мы в долгоживущем процессе)
     fh = open(log_path, "wb")
-    
     try:
-        # DETACHED_PROCESS вместо CREATE_NEW_PROCESS_GROUP — надёжнее на Windows
         proc = subprocess.Popen(
             cmd, cwd=PROJECT_ROOT, stdout=fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, env=env,
@@ -261,7 +381,7 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
     except Exception as e:
         fh.close()
         return f"ERROR launching gradle: {e}"
-    
+
     if background:
         _save_state({"pid": proc.pid, "log": str(log_path), "task": task,
                      "started": time.strftime("%Y%m%d-%H%M%S")})
@@ -277,13 +397,16 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
             return -1
 
     code = await anyio.to_thread.run_sync(_wait)
-    fh.close()  # для синхронного запуска закрываем после wait
-    out = log_path.read_text(encoding="utf-8", errors="replace")
+    fh.close()
+    out = _decode_bytes(log_path.read_bytes())
     tail = "\n".join(out.splitlines()[-120:])
     hint = ""
     if code != 0 and "JAVA_HOME" in out:
-        hint = f"\n[HINT] Проблема с JAVA_HOME ({env['JAVA_HOME']})."
+        hint = f"\n[HINT] Проблема с JAVA_HOME ({jh})."
+    if code != 0 and "not recognized" in out:
+        hint = f"\n[HINT] gradlew.bat не найден — проверь project_root в mod_config.json."
     return f"exit={code} | full log: {log_path}\n--- tail ---\n{tail}{hint}"
+
 
 @mcp.tool()
 @traced
@@ -314,15 +437,15 @@ def stop_client() -> str:
 def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
              filter_regex: str = "") -> str:
     """Читает логи. source: latest | debug | crash | run.
-    latest/debug — run/client/logs; crash — свежий краш-репорт (читай с mode='head');
+    latest/debug — логи клиента; crash — свежий краш-репорт (читай с mode='head');
     run — лог фонового runClient. filter_regex — показать только строки с шаблоном."""
+    lg = CFG["logs"]
     if source == "latest":
-        p = PROJECT_ROOT / "run" / "client" / "logs" / "latest.log"
+        p = PROJECT_ROOT / lg["client_latest"]
     elif source == "debug":
-        p = PROJECT_ROOT / "run" / "client" / "logs" / "debug.log"
+        p = PROJECT_ROOT / lg["client_debug"]
     elif source == "crash":
-        dirs = [PROJECT_ROOT / "run" / "client" / "crash-reports",
-                PROJECT_ROOT / "run" / "crash-reports"]
+        dirs = [PROJECT_ROOT / d for d in lg["crash_dirs"]]
         cands = sorted((f for d in dirs if d.is_dir() for f in d.glob("crash-*.txt")),
                        key=lambda f: f.stat().st_mtime)
         if not cands:
@@ -340,55 +463,41 @@ def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
         return f"Unknown source: {source}"
     if not p.is_file():
         return f"Log not found: {p}"
-    ls = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    ls = _decode_bytes(p.read_bytes()).splitlines()
     if filter_regex:
         rx = re.compile(filter_regex, re.IGNORECASE)
         ls = [l for l in ls if rx.search(l)]
     sel = ls[-lines:] if mode == "tail" else ls[:lines]
     return f"[{p.name}] shown {len(sel)} of {len(ls)} lines (mode={mode})\n" + "\n".join(sel)
 
-# ---------- шаг 4: GUI ----------
+
+# ---------- GUI ----------
 
 @mcp.tool()
 @traced
 def screenshot(target: str = "minecraft", save_path: str = "") -> str:
-    """Сделать скриншот окна (target: 'minecraft' | 'idea' | 'screen' | путь к окну).
-    save_path — куда сохранить (если пусто, возвращается base64)."""
+    """Скриншот окна (target: 'minecraft' | 'idea' | 'screen' | подстрока заголовка).
+    save_path — куда сохранить PNG; если пусто, возвращается base64."""
     try:
-        if target == "minecraft":
-            windows = gw.getWindowsWithTitle("Minecraft")
+        win = None
+        if target != "screen":
+            key = {"minecraft": "Minecraft", "idea": "IntelliJ IDEA"}.get(target, target)
+            windows = gw.getWindowsWithTitle(key)
             if not windows:
-                return "ERROR: Minecraft window not found. Запусти runClient."
+                return f"ERROR: window '{key}' not found."
             win = windows[0]
-        elif target == "idea":
-            windows = gw.getWindowsWithTitle("IntelliJ IDEA")
-            if not windows:
-                return "ERROR: IntelliJ IDEA window not found."
-            win = windows[0]
-        elif target == "screen":
-            win = None
-        else:
-            windows = gw.getWindowsWithTitle(target)
-            if not windows:
-                return f"ERROR: Window with title '{target}' not found."
-            win = windows[0]
-
         with mss.mss() as sct:
             if win:
                 monitor = {"top": win.top, "left": win.left,
                            "width": win.width, "height": win.height}
             else:
-                monitor = sct.monitors[0]  # весь экран
+                monitor = sct.monitors[0]
             img = sct.grab(monitor)
-            
         if save_path:
             p = Path(save_path)
             p.parent.mkdir(parents=True, exist_ok=True)
             mss.tools.to_png(img.rgb, img.size, output=str(p))
             return f"OK: screenshot saved to {p} ({img.width}x{img.height})"
-        
-        # base64 для возврата в чат
-        import base64
         png_data = mss.tools.to_png(img.rgb, img.size)
         return f"data:image/png;base64,{base64.b64encode(png_data).decode()}"
     except Exception as e:
@@ -430,13 +539,34 @@ def maximize_window(title: str) -> str:
 
 @mcp.tool()
 @traced
+def list_windows(filter_text: str = "") -> str:
+    """Список заголовков открытых окон (опционально фильтр по подстроке)."""
+    # ВАЖНО: getAllTitles возвращает List[str], а не окна
+    titles = [t for t in gw.getAllTitles() if isinstance(t, str) and t.strip()]
+    if filter_text:
+        titles = [t for t in titles if filter_text.lower() in t.lower()]
+    return "\n".join(titles[:50]) or "(no windows)"
+
+
+@mcp.tool()
+@traced
 def press_key(keys: str, interval: float = 0.1) -> str:
-    """Нажать клавишу или комбинацию (например: 'f5', 'ctrl+s', 'enter', 'w').
-    interval — задержка между клавишами в комбинации."""
+    """Нажать клавишу или комбинацию (например: 'f5', 'ctrl+s', 'enter')."""
     try:
         parts = [k.strip() for k in keys.lower().split("+")]
         pyautogui.hotkey(*parts, interval=interval)
         return f"OK: pressed {keys}"
+    except Exception as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
+@mcp.tool()
+@traced
+def type_text(text: str, interval: float = 0.03) -> str:
+    """Набрать текст с клавиатуры (команды в игре, поля ввода). Только латиница/ASCII."""
+    try:
+        pyautogui.write(text, interval=interval)
+        return f"OK: typed {len(text)} chars"
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
 
@@ -459,26 +589,6 @@ def get_mouse_position() -> str:
     x, y = pyautogui.position()
     return f"Mouse at ({x}, {y})"
 
-@mcp.tool()
-@traced
-def list_windows(filter_text: str = "") -> str:
-    """Список заголовков открытых окон (опционально фильтр по подстроке)."""
-    titles = [w.title for w in gw.getAllTitles() if w.title.strip()]
-    if filter_text:
-        titles = [t for t in titles if filter_text.lower() in t.lower()]
-    return "\n".join(titles[:50]) or "(no windows)"
-
-
-@mcp.tool()
-@traced
-def type_text(text: str, interval: float = 0.03) -> str:
-    """Набрать текст с клавиатуры (команды в игре, поля ввода). Только латиница/ASCII."""
-    try:
-        pyautogui.write(text, interval=interval)
-        return f"OK: typed {len(text)} chars"
-    except Exception as e:
-        return f"ERROR: {type(e).__name__}: {e}"
-
 
 @mcp.tool()
 @traced
@@ -491,22 +601,139 @@ def wait(seconds: float = 5.0) -> str:
 @mcp.tool()
 @traced
 def open_idea(project: str = "") -> str:
-    """Открыть проект в IntelliJ IDEA (автопоиск idea64.exe)."""
+    """Открыть проект в IntelliJ IDEA (путь из конфига / автодетект)."""
     root = Path(project) if project else PROJECT_ROOT
-    idea_exe = None
-    base = Path(r"C:\Program Files\JetBrains")
-    if base.is_dir():
-        for d in sorted(base.glob("IntelliJ IDEA*"), reverse=True):
-            cand = d / "bin" / "idea64.exe"
-            if cand.is_file():
-                idea_exe = cand
-                break
-    if idea_exe is None:
-        return "ERROR: idea64.exe not found in C:\\Program Files\\JetBrains"
+    idea_exe = Path(CFG["idea_path"]) if CFG["idea_path"] else None
+    if idea_exe is None or not idea_exe.is_file():
+        return ("ERROR: IDEA not found. Задай idea_path в mod_config.json "
+                "или переменную окружения IDEA_PATH")
     subprocess.Popen([str(idea_exe), str(root)], stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      creationflags=subprocess.DETACHED_PROCESS)
     return f"OK: opening IDEA for {root}"
+
+
+@mcp.tool()
+@traced
+def show_in_idea(rel_path: str, line: int = 0) -> str:
+    """Открыть файл в запущенной IntelliJ IDEA (чтобы человек видел правку вживую)."""
+    idea_exe = CFG["idea_path"]
+    if not idea_exe or not Path(idea_exe).is_file():
+        return "ERROR: IDEA not detected (idea_path в mod_config.json или IDEA_PATH)"
+    p = _safe_path(rel_path)
+    args = [idea_exe, "--line", str(line), str(p)] if line else [idea_exe, str(p)]
+    subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, creationflags=subprocess.DETACHED_PROCESS)
+    return f"OK: asked IDEA to open {rel_path}" + (f" line {line}" if line else "")
+
+
+@mcp.tool()
+@traced
+def recent_activity(lines: int = 30) -> str:
+    """Журнал вызовов сервера (кто, что и когда вызвал) — живое наблюдение за работой ИИ."""
+    if not DEBUG_LOG.is_file():
+        return "(empty)"
+    ls = DEBUG_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(ls[-lines:])
+
+
+@mcp.tool()
+@traced
+def project_brief() -> str:
+    """Динамическое досье проекта: загрузчик, mod id, пакеты, ресурсы.
+    ИИ получает контекст отсюда, а не из жёстких инструкций."""
+    if not CFG["project_root"]:
+        return "ERROR: project not configured — вызови configure(project_root=...)"
+    info = {"loader": CFG["loader"], "project_root": str(PROJECT_ROOT),
+            "java_home": DEFAULT_JAVA_HOME or "NOT DETECTED",
+            "idea": CFG["idea_path"] or "NOT DETECTED",
+            "mods": _probe(_probe_reader_dir(PROJECT_ROOT / "src" / "main" / "resources"))}
+    src = PROJECT_ROOT / "src" / "main" / "java"
+    pkgs = []
+    if src.is_dir():
+        for d in sorted(src.rglob("*")):
+            if d.is_dir() and any(f.suffix == ".java" for f in d.iterdir()):
+                pkgs.append(str(d.relative_to(PROJECT_ROOT)))
+    info["java_packages"] = pkgs[:30]
+    res = PROJECT_ROOT / "src" / "main" / "resources"
+    info["has_assets"] = (res / "assets").is_dir()
+    info["has_data"] = (res / "data").is_dir()
+    return json.dumps(info, ensure_ascii=False, indent=2)
+
+
+# ---------- universal launcher (ModRun), кирпич 1 ----------
+
+def _probe_reader_dir(root: Path):
+    def rd(name):
+        f = root / name
+        return f.read_text(encoding="utf-8", errors="replace") if f.is_file() else None
+    return rd
+
+
+def _probe_reader_zip(z: zipfile.ZipFile):
+    names = set(z.namelist())
+
+    def rd(name):
+        return z.read(name).decode("utf-8", errors="replace") if name in names else None
+    return rd
+
+
+def _probe(rd) -> list:
+    out = []
+    nf = rd("META-INF/neoforge.mods.toml")
+    fg = rd("META-INF/mods.toml")
+    if nf or fg:
+        try:
+            data = tomllib.loads(nf or fg)
+            m = (data.get("mods") or [{}])[0]
+            mc = ""
+            for v in (data.get("dependencies") or {}).values():
+                for d in (v if isinstance(v, list) else [v]):
+                    if isinstance(d, dict) and d.get("modId") == "minecraft":
+                        mc = d.get("versionRange", "")
+            out.append({"loader": "neoforge" if nf else "forge",
+                        "modId": m.get("modId"), "version": m.get("version"),
+                        "minecraft": mc})
+        except Exception as e:
+            out.append({"loader": "toml-parse-error", "error": str(e)})
+    fb = rd("fabric.mod.json")
+    if fb:
+        try:
+            d = json.loads(fb)
+            out.append({"loader": "fabric", "modId": d.get("id"),
+                        "version": d.get("version"),
+                        "minecraft": (d.get("depends") or {}).get("minecraft")})
+        except Exception as e:
+            out.append({"loader": "fabric-json-error", "error": str(e)})
+    qt = rd("quilt.mod.json")
+    if qt:
+        try:
+            ql = (json.loads(qt) or {}).get("quilt_loader", {})
+            out.append({"loader": "quilt", "modId": ql.get("id"),
+                        "version": ql.get("version")})
+        except Exception:
+            pass
+    return out or [{"loader": "unknown"}]
+
+
+@mcp.tool()
+@traced
+def probe_mod(target: str) -> str:
+    """Определить формат мода (.jar или папка исходников): загрузчик, modId, версия, версия MC.
+    Кирпич 1 универсального загрузчика ModRun."""
+    p = Path(target).resolve()
+    if not p.exists():
+        return f"ERROR: not found: {target}"
+    if p.is_dir():
+        root = p / "src" / "main" / "resources"
+        res = _probe(_probe_reader_dir(root if root.is_dir() else p))
+    elif p.suffix.lower() == ".jar":
+        with zipfile.ZipFile(p) as z:
+            res = _probe(_probe_reader_zip(z))
+    else:
+        return "ERROR: expected .jar file or source directory"
+    return json.dumps(res, ensure_ascii=False, indent=2)
+
 
 if __name__ == "__main__":
     import sys

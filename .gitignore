@@ -16,6 +16,7 @@ ENV/
 # Local configs & runtime
 state.json
 server_debug.log
+mod_config.json
 backups/
 logs/
 

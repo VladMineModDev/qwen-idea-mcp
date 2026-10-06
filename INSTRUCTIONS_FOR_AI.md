@@ -1,38 +1,45 @@
 # Инструкции для ИИ: работа с qwen-idea-mcp
 
-## Контекст
-- Проект: мод SculkEcho (NeoForge, Minecraft 1.21.1), путь C:\Users\Home\Desktop\skulkevo-template-1.21.1
-- Код: src/main/java/com/example/sculkecho/ (пакеты client, crafting, entity, infection, init, item, loot, network, service)
-- Ресурсы: src/main/resources/assets/sculkecho/ и data/
-- Сборка: gradlew.bat, JDK 21 (JAVA_HOME настроен на сервере)
-- MCP-сервер — отдельный демон (SSE). Если инструменты не отвечают — попроси человека проверить окно PowerShell с демоном.
+## Первый выход на связь
+1. ping — связь и конфигурация. Если WARNING: спроси у человека абсолютный путь
+   к проекту мода и вызови configure(project_root=...).
+2. project_brief — досье проекта (загрузчик, mod id, пакеты, ресурсы).
+   Никогда не угадывай специфику проекта — бери её отсюда.
+3. Уточняй детали через list_files / grep / read_file.
 
 ## Каталог инструментов
-Файлы: read_file(rel_path), write_file(rel_path, content), patch_file(rel_path, old_text, new_text, replace_all), delete_file(rel_path), list_files(rel_dir, pattern), grep(pattern, rel_dir, file_glob, case_sensitive, max_results) -> "файл:строка: текст"
-Сборка/запуск: run_gradle(task, background, timeout), client_status(), stop_client()
+Файлы: read_file, write_file, patch_file, delete_file, list_files, grep
+Сборка/запуск: run_gradle(task, background, timeout), client_status, stop_client
 Логи: get_logs(source: latest|debug|crash|run, lines, mode: tail|head, filter_regex)
-GUI: screenshot(target: minecraft|idea|screen|заголовок, save_path), focus_window(title), maximize_window(title), list_windows(filter), press_key("f3"/"ctrl+s"), type_text(ascii), click_at(x, y), get_mouse_position(), wait(seconds)
-Служебные: ping(), open_idea()
+GUI: screenshot(target, save_path), focus_window, maximize_window, list_windows,
+     press_key, type_text (ASCII), click_at, get_mouse_position, wait
+Наблюдение и интеграция: show_in_idea(rel_path, line), recent_activity(lines), open_idea
+Анализ модов: probe_mod(jar или папка)
+Служебные: ping, configure, project_brief
 
-## Стандартные циклы
-### Правка кода (основной)
-1. grep / read_file — найти место. 2. patch_file — минимальная правка (фрагмент копировать ТОЧНО из read_file, включая отступы). 3. run_gradle("compileJava") — ждать exit=0; при ошибке читать хвост вывода и чинить. 4. Если правка видна в игре: stop_client() -> run_gradle("runClient", background=True) -> wait(45) -> get_logs(source="run", filter_regex="ERROR|Exception|Missing").
-### Разбор краша
-1. get_logs(source="crash", mode="head", lines=120). 2. Найти классы мода в стектрейсе -> grep/read_file. 3. Цикл правки кода.
-### Проверка в игре
-1. client_status(); если не запущен — поднять по циклу правки. 2. focus_window("Minecraft") -> screenshot(save_path=...) и проанализировать/показать человеку. 3. При необходимости press_key / type_text + press_key("enter") / click_at. 4. По завершении stop_client().
+## Циклы
+Правка кода: grep/read_file -> patch_file (фрагмент ТОЧНО из read_file) ->
+  run_gradle("compileJava") до exit=0 -> show_in_idea(правленный файл) ->
+  stop_client() -> run_gradle("runClient", background=True) -> wait(45) ->
+  get_logs(source="run", filter_regex="ERROR|Exception|Missing")
+Разбор краша: get_logs(source="crash", mode="head", lines=120) -> стектрейс ->
+  grep/read_file -> цикл правки
+Проверка в игре: client_status -> focus_window("Minecraft") -> screenshot(save_path=...)
+  -> при необходимости press_key/type_text/click_at -> stop_client() по завершении
 
 ## Жёсткие правила
-- runClient ТОЛЬКО с background=True (иначе блокировка до таймаута).
-- Никогда не запускать второй runClient без stop_client().
-- Перед крупным рефакторингом просить человека сделать git commit (бэкапы есть в qwen-idea-mcp/backups, но git надёжнее).
-- Запрещено редактировать: gradlew, gradlew.bat, gradle/, .gradle/, .idea/, build/, run/ (сервер и так откажет).
-- Изменения Java-кода требуют compileJava ПЕРЕД runClient; изменения ресурсов (текстуры/json/lang) — только перезапуска клиента.
-- По одному вызову инструмента за раз, ждать результата перед следующим шагом.
+- runClient ТОЛЬКО с background=True; перед новым runClient всегда stop_client().
+- Перед patch_file всегда read_file; не угадывай отступы.
+- Краш-репорты читай с mode="head".
+- Java-правки требуют compileJava до runClient; ресурсы (текстуры/json/lang) — только перезапуск клиента.
+- Перед крупным рефакторингом проси человека сделать git commit.
+- Запрещено редактировать: gradlew*, gradle/, .gradle/, .idea/, build/, run/ (сервер откажет).
+- mod_config.json не правь через write_file — только configure().
+- По одному вызову за раз, жди результат.
+- После важной правки вызывай show_in_idea — человек наблюдает за тобой в IDEA.
 
 ## Подводные камни
-- Первый compileJava греется минутами (демон Gradle) — это норма.
-- runClient загружается 40–90 сек; get_logs(source="run") раньше может быть пустым.
+- Первый compileJava греется минутами — норма. runClient грузится 40–90 сек.
 - type_text не печатает кириллицу.
-- Краш-репорты читать с mode="head" (стектрейс в начале файла).
-- Если вызов «виснет»: сервер жив, проверить окно демона и повторить вызов следующим сообщением.
+- Если вызов «виснет»: сервер жив (проверь recent_activity из другого чата),
+  повтори вызов следующим сообщением или в новом чате.
