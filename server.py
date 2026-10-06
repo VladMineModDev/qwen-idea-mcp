@@ -1,7 +1,8 @@
 """
-qwen-idea-mcp v1.5 — MCP-сервер для ИИ-разработки Minecraft-модов (NeoForge/Fabric/Forge)
+qwen-idea-mcp v1.7 — MCP-сервер для ИИ-разработки Minecraft-модов (NeoForge/Fabric/Forge)
 через IntelliJ IDEA: файлы с бэкапами, Gradle, логи/краш-репорты, GUI-автоматизация,
-детект формата мода (probe_mod).
+детект формата мода (probe_mod), журнал событий для IDEA-плагина (ai_events.jsonl).
+Все инструменты несут MCP-аннотации (readOnly/destructive/idempotent/openWorld).
 Конфигурация: mod_config.json (или env QWEN_MCP_CONFIG), автодетект JAVA_HOME и IDEA.
 Транспорты: python server.py sse | streamable-http | stdio
 """
@@ -23,6 +24,7 @@ import mss
 import pyautogui
 import pygetwindow as gw
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # ---------- конфигурация: в коде нет личных путей ----------
 SERVER_ROOT = Path(__file__).resolve().parent
@@ -30,8 +32,27 @@ BACKUP_ROOT = SERVER_ROOT / "backups"
 LOG_ROOT = SERVER_ROOT / "logs"
 STATE_FILE = SERVER_ROOT / "state.json"
 DEBUG_LOG = SERVER_ROOT / "server_debug.log"
+EVENTS_FILE = SERVER_ROOT / "ai_events.jsonl"
 CONFIG_FILE = Path(os.environ.get("QWEN_MCP_CONFIG",
                                   str(SERVER_ROOT / "mod_config.json")))
+
+# ---------- MCP-аннотации инструментов (spec 2025-06-18) ----------
+A_READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                         idempotentHint=True, openWorldHint=False)
+A_READ_OPEN = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                              idempotentHint=True, openWorldHint=True)
+A_CONF = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                         idempotentHint=True, openWorldHint=False)
+A_OVERWRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                              idempotentHint=True, openWorldHint=False)
+A_DESTR = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                          idempotentHint=False, openWorldHint=False)
+A_DESTR_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                               idempotentHint=False, openWorldHint=True)
+A_OPEN_ACT = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                             idempotentHint=False, openWorldHint=True)
+A_OPEN_IDEM = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                              idempotentHint=True, openWorldHint=True)
 
 
 def _detect_java_home() -> str:
@@ -113,11 +134,24 @@ mcp = FastMCP("qwen-idea-mcp", host=CFG["host"], port=CFG["port"],
               instructions=SERVER_INSTRUCTIONS)
 
 
-# ---------- чёрный ящик ----------
+# ---------- чёрный ящик и события ----------
 
 def _dbg(msg: str):
     with open(DEBUG_LOG, "a", encoding="utf-8") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+
+
+def _emit_event(tool: str, file: str = "", lines=None, summary: str = "",
+                status: str = "ok"):
+    """Структурное событие для IDEA-плагина и журнала (контракт ai_events.jsonl)."""
+    try:
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "tool": tool,
+               "file": file, "lines": lines, "summary": summary[:300],
+               "status": status}
+        with open(EVENTS_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def traced(fn):
@@ -204,7 +238,7 @@ def _decode_bytes(b: bytes) -> str:
 
 # ---------- файлы ----------
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def ping() -> str:
     """Проверка связи + состояние конфигурации."""
@@ -217,7 +251,7 @@ def ping() -> str:
     return msg
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_CONF)
 @traced
 def configure(project_root: str, java_home: str = "", idea_path: str = "",
               loader: str = "") -> str:
@@ -252,11 +286,12 @@ def configure(project_root: str, java_home: str = "", idea_path: str = "",
     CFG.update(new)
     PROJECT_ROOT = Path(CFG["project_root"]).resolve()
     DEFAULT_JAVA_HOME = CFG["java_home"]
+    _emit_event("configure", "", None, f"project_root={p}")
     return (f"OK: config saved to {CONFIG_FILE} | project={PROJECT_ROOT} | "
             f"java={DEFAULT_JAVA_HOME or 'NOT DETECTED'} | loader={CFG['loader']}.{warn}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def list_files(rel_dir: str = "", pattern: str = "**/*") -> str:
     """Список файлов в директории проекта (относительно корня)."""
@@ -272,7 +307,7 @@ def list_files(rel_dir: str = "", pattern: str = "**/*") -> str:
     return "\n".join(items[:500]) or "(empty)"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def read_file(rel_path: str, max_bytes: int = 200_000) -> str:
     """Прочитать содержимое файла проекта."""
@@ -286,7 +321,7 @@ def read_file(rel_path: str, max_bytes: int = 200_000) -> str:
     return text
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OVERWRITE)
 @traced
 def write_file(rel_path: str, content: str) -> str:
     """Создать новый файл или полностью перезаписать существующий (старая версия уходит в backup)."""
@@ -298,10 +333,12 @@ def write_file(rel_path: str, content: str) -> str:
     msg = f"OK: {'updated' if existed else 'created'} {rel_path} ({len(content)} chars)"
     if b:
         msg += f" | backup: {b}"
+    _emit_event("write_file", rel_path, [1, content.count("\n") + 1],
+                "created" if not existed else "updated")
     return msg
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_DESTR)
 @traced
 def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = False) -> str:
     """Точечная замена фрагмента текста. Ошибка, если фрагмент не найден или неоднозначен."""
@@ -314,13 +351,18 @@ def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = 
         return f"ERROR: fragment not found in {rel_path}. Проверь точное совпадение с отступами."
     if count > 1 and not replace_all:
         return f"ERROR: fragment found {count} times. Уточни контекст или replace_all=True."
+    idx = src.find(old_text)
+    start_line = src[:idx].count("\n") + 1
+    end_line = start_line + old_text.count("\n")
     b = _backup(p)
     p.write_text(src.replace(old_text, new_text) if replace_all
                  else src.replace(old_text, new_text, 1), encoding="utf-8")
+    _emit_event("patch_file", rel_path, [start_line, end_line],
+                f"replaced {count if replace_all else 1} occurrence(s)")
     return f"OK: replaced {count if replace_all else 1} occurrence(s) in {rel_path} | backup: {b}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_DESTR)
 @traced
 def delete_file(rel_path: str) -> str:
     """Удалить файл (сначала копия в backup)."""
@@ -329,10 +371,11 @@ def delete_file(rel_path: str) -> str:
         return f"File not found: {rel_path}"
     b = _backup(p)
     p.unlink()
+    _emit_event("delete_file", rel_path, None, "deleted")
     return f"OK: deleted {rel_path} | backup: {b}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def grep(pattern: str, rel_dir: str = "", file_glob: str = "*.java",
          case_sensitive: bool = False, max_results: int = 50) -> str:
@@ -357,7 +400,7 @@ def grep(pattern: str, rel_dir: str = "", file_glob: str = "*.java",
 
 # ---------- gradle и логи ----------
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_ACT)
 @traced
 async def run_gradle(task: str, background: bool = False, timeout: int = 900,
                      java_home: str = "") -> str:
@@ -385,6 +428,7 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
     if background:
         _save_state({"pid": proc.pid, "log": str(log_path), "task": task,
                      "started": time.strftime("%Y%m%d-%H%M%S")})
+        _emit_event("run_gradle", "", None, f"background {task} pid={proc.pid}")
         return (f"OK: launched '{task}' in background, pid={proc.pid}, log={log_path}. "
                 f"Следи через get_logs(source='run').")
 
@@ -405,10 +449,12 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
         hint = f"\n[HINT] Проблема с JAVA_HOME ({jh})."
     if code != 0 and "not recognized" in out:
         hint = f"\n[HINT] gradlew.bat не найден — проверь project_root в mod_config.json."
+    _emit_event("run_gradle", "", None, f"{task} exit={code}",
+                "ok" if code == 0 else "error")
     return f"exit={code} | full log: {log_path}\n--- tail ---\n{tail}{hint}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def client_status() -> str:
     """Жив ли фоновый процесс runClient."""
@@ -419,7 +465,7 @@ def client_status() -> str:
             f"alive={_pid_alive(st['pid'])} log={st.get('log')}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_DESTR_OPEN)
 @traced
 def stop_client() -> str:
     """Остановить фоновый runClient (вместе с дочерними процессами)."""
@@ -432,7 +478,7 @@ def stop_client() -> str:
     return f"OK: killed pid {st['pid']} tree."
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
              filter_regex: str = "") -> str:
@@ -473,7 +519,7 @@ def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
 
 # ---------- GUI ----------
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ_OPEN)
 @traced
 def screenshot(target: str = "minecraft", save_path: str = "") -> str:
     """Скриншот окна (target: 'minecraft' | 'idea' | 'screen' | подстрока заголовка).
@@ -504,7 +550,7 @@ def screenshot(target: str = "minecraft", save_path: str = "") -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_IDEM)
 @traced
 def focus_window(title: str) -> str:
     """Вывести окно на передний план по заголовку."""
@@ -521,7 +567,7 @@ def focus_window(title: str) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_IDEM)
 @traced
 def maximize_window(title: str) -> str:
     """Развернуть окно на весь экран."""
@@ -537,18 +583,17 @@ def maximize_window(title: str) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ_OPEN)
 @traced
 def list_windows(filter_text: str = "") -> str:
     """Список заголовков открытых окон (опционально фильтр по подстроке)."""
-    # ВАЖНО: getAllTitles возвращает List[str], а не окна
     titles = [t for t in gw.getAllTitles() if isinstance(t, str) and t.strip()]
     if filter_text:
         titles = [t for t in titles if filter_text.lower() in t.lower()]
     return "\n".join(titles[:50]) or "(no windows)"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_ACT)
 @traced
 def press_key(keys: str, interval: float = 0.1) -> str:
     """Нажать клавишу или комбинацию (например: 'f5', 'ctrl+s', 'enter')."""
@@ -560,7 +605,7 @@ def press_key(keys: str, interval: float = 0.1) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_ACT)
 @traced
 def type_text(text: str, interval: float = 0.03) -> str:
     """Набрать текст с клавиатуры (команды в игре, поля ввода). Только латиница/ASCII."""
@@ -571,7 +616,7 @@ def type_text(text: str, interval: float = 0.03) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_ACT)
 @traced
 def click_at(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
     """Кликнуть по координатам экрана (button: 'left' | 'right' | 'middle')."""
@@ -582,7 +627,7 @@ def click_at(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
         return f"ERROR: {type(e).__name__}: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ_OPEN)
 @traced
 def get_mouse_position() -> str:
     """Получить текущие координаты мыши."""
@@ -590,7 +635,7 @@ def get_mouse_position() -> str:
     return f"Mouse at ({x}, {y})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def wait(seconds: float = 5.0) -> str:
     """Пауза между действиями (ожидание загрузки мира и т.п.), максимум 120 сек."""
@@ -598,7 +643,7 @@ def wait(seconds: float = 5.0) -> str:
     return f"OK: waited {seconds}s"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_ACT)
 @traced
 def open_idea(project: str = "") -> str:
     """Открыть проект в IntelliJ IDEA (путь из конфига / автодетект)."""
@@ -613,7 +658,7 @@ def open_idea(project: str = "") -> str:
     return f"OK: opening IDEA for {root}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_OPEN_IDEM)
 @traced
 def show_in_idea(rel_path: str, line: int = 0) -> str:
     """Открыть файл в запущенной IntelliJ IDEA (чтобы человек видел правку вживую)."""
@@ -627,7 +672,7 @@ def show_in_idea(rel_path: str, line: int = 0) -> str:
     return f"OK: asked IDEA to open {rel_path}" + (f" line {line}" if line else "")
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def recent_activity(lines: int = 30) -> str:
     """Журнал вызовов сервера (кто, что и когда вызвал) — живое наблюдение за работой ИИ."""
@@ -637,7 +682,20 @@ def recent_activity(lines: int = 30) -> str:
     return "\n".join(ls[-lines:])
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
+@traced
+def ai_events(last_n: int = 20, file_filter: str = "") -> str:
+    """Структурный журнал действий ИИ (jsonl): tool, file, lines, summary.
+    Этот же файл читает будущий IDEA-плагин (контракт ai_events.jsonl)."""
+    if not EVENTS_FILE.is_file():
+        return "(empty)"
+    ls = EVENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    if file_filter:
+        ls = [l for l in ls if file_filter in l]
+    return "\n".join(ls[-last_n:]) or "(empty)"
+
+
+@mcp.tool(annotations=A_READ)
 @traced
 def project_brief() -> str:
     """Динамическое досье проекта: загрузчик, mod id, пакеты, ресурсы.
@@ -716,7 +774,7 @@ def _probe(rd) -> list:
     return out or [{"loader": "unknown"}]
 
 
-@mcp.tool()
+@mcp.tool(annotations=A_READ)
 @traced
 def probe_mod(target: str) -> str:
     """Определить формат мода (.jar или папка исходников): загрузчик, modId, версия, версия MC.
