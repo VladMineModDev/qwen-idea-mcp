@@ -1,5 +1,5 @@
 # 🎮 qwen-idea-mcp
-
+[![M8ven Verified](https://m8ven.ai/badge/vladminemoddev/qwen-idea-mcp)](https://m8ven.ai/mcp/vladminemoddev/qwen-idea-mcp)
 **MCP-сервер для AI-разработки Minecraft-модов через IntelliJ IDEA**
 
 [![Release](https://img.shields.io/badge/release-v1.5.0-blue)](https://github.com/VladMineModDev/qwen-idea-mcp/releases)
