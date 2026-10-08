@@ -300,7 +300,7 @@ def read_file(rel_path: str, max_bytes: int = 200_000) -> str:
     return text
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def write_file(rel_path: str, content: str) -> str:
     """Создать новый файл или полностью перезаписать существующий (старая версия уходит в backup)."""
@@ -317,7 +317,7 @@ def write_file(rel_path: str, content: str) -> str:
     return msg
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = False) -> str:
     """Точечная замена фрагмента текста. Ошибка, если фрагмент не найден или неоднозначен."""
@@ -341,7 +341,7 @@ def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = 
     return f"OK: replaced {count if replace_all else 1} occurrence(s) in {rel_path} | backup: {b}"
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def delete_file(rel_path: str) -> str:
     """Удалить файл (сначала копия в backup)."""
@@ -443,7 +443,7 @@ def client_status() -> str:
             f"alive={_pid_alive(st['pid'])} log={st.get('log')}")
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def stop_client() -> str:
     """Остановить фоновый runClient (вместе с дочерними процессами)."""
