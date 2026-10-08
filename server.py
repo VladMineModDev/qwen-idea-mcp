@@ -23,6 +23,7 @@ import anyio
 import mss
 import pyautogui
 import pygetwindow as gw
+import uuid
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
@@ -33,6 +34,7 @@ LOG_ROOT = SERVER_ROOT / "logs"
 STATE_FILE = SERVER_ROOT / "state.json"
 DEBUG_LOG = SERVER_ROOT / "server_debug.log"
 EVENTS_FILE = SERVER_ROOT / "ai_events.jsonl"
+DECISIONS_FILE = SERVER_ROOT / "ai_decisions.jsonl"
 CONFIG_FILE = Path(os.environ.get("QWEN_MCP_CONFIG",
                                   str(SERVER_ROOT / "mod_config.json")))
 
@@ -110,6 +112,7 @@ SERVER_INSTRUCTIONS = (
     "Правила: перед patch_file всегда read_file; runClient ТОЛЬКО с background=True; "
     "перед новым runClient всегда stop_client(); краш-репорты с mode='head'; "
     "бэкапы правок автоматические; после важной правки вызывай show_in_idea."
+    "После правок проверяй ai_decisions(): rejected означает откат правки человеком — переделай иначе. "
 )
 
 mcp = FastMCP("qwen-idea-mcp", host=CFG["host"], port=CFG["port"],
@@ -124,12 +127,12 @@ def _dbg(msg: str):
 
 
 def _emit_event(tool: str, file: str = "", lines=None, summary: str = "",
-                status: str = "ok"):
-    """Структурное событие для IDEA-плагина и журнала (контракт ai_events.jsonl)."""
+                status: str = "ok", backup: str = ""):
+    """Структурное событие для IDEA-плагина (контракт ai_events.jsonl v2: +id, +backup)."""
     try:
-        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "tool": tool,
-               "file": file, "lines": lines, "summary": summary[:300],
-               "status": status}
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "id": uuid.uuid4().hex[:8],
+               "tool": tool, "file": file, "lines": lines,
+               "summary": summary[:300], "status": status, "backup": backup}
         with open(EVENTS_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
@@ -313,7 +316,7 @@ def write_file(rel_path: str, content: str) -> str:
     if b:
         msg += f" | backup: {b}"
     _emit_event("write_file", rel_path, [1, content.count("\n") + 1],
-                "created" if not existed else "updated")
+            "created" if not existed else "updated", backup=b or "")
     return msg
 
 
@@ -337,7 +340,7 @@ def patch_file(rel_path: str, old_text: str, new_text: str, replace_all: bool = 
     p.write_text(src.replace(old_text, new_text) if replace_all
                  else src.replace(old_text, new_text, 1), encoding="utf-8")
     _emit_event("patch_file", rel_path, [start_line, end_line],
-                f"replaced {count if replace_all else 1} occurrence(s)")
+            f"replaced {count if replace_all else 1} occurrence(s)", backup=b or "")
     return f"OK: replaced {count if replace_all else 1} occurrence(s) in {rel_path} | backup: {b}"
 
 
@@ -350,7 +353,7 @@ def delete_file(rel_path: str) -> str:
         return f"File not found: {rel_path}"
     b = _backup(p)
     p.unlink()
-    _emit_event("delete_file", rel_path, None, "deleted")
+    _emit_event("delete_file", rel_path, None, "deleted", backup=b or "")
     return f"OK: deleted {rel_path} | backup: {b}"
 
 
@@ -765,6 +768,17 @@ def probe_mod(target: str) -> str:
         return "ERROR: expected .jar file or source directory"
     return json.dumps(res, ensure_ascii=False, indent=2)
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@traced
+def ai_decisions(last_n: int = 20, file_filter: str = "") -> str:
+    """Решения человека по правкам ИИ (jsonl): event_id, decision accepted|rejected.
+    rejected = правка откатана из backup: переделай иначе или спроси человека."""
+    if not DECISIONS_FILE.is_file():
+        return "(no decisions yet)"
+    ls = DECISIONS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    if file_filter:
+        ls = [l for l in ls if file_filter in l]
+    return "\n".join(ls[-last_n:]) or "(no decisions yet)"
 
 if __name__ == "__main__":
     import sys

@@ -63,13 +63,13 @@ EXPECTED_HINTS = {
     "configure": (False, False, True, False),
     "list_files": (True, False, True, False),
     "read_file": (True, False, True, False),
-    "write_file": (False, True, True, False),
-    "patch_file": (False, True, False, False),
-    "delete_file": (False, True, False, False),
+    "write_file": (False, False, True, False), 
+    "patch_file": (False, False, True, False), 
+    "delete_file": (False, False, True, False),
     "grep": (True, False, True, False),
     "run_gradle": (False, False, False, True),
     "client_status": (True, False, True, False),
-    "stop_client": (False, True, False, True),
+    "stop_client": (False, False, True, True), 
     "get_logs": (True, False, True, False),
     "screenshot": (True, False, True, True),
     "focus_window": (False, False, True, True),
@@ -86,6 +86,7 @@ EXPECTED_HINTS = {
     "ai_events": (True, False, True, False),
     "project_brief": (True, False, True, False),
     "probe_mod": (True, False, True, False),
+    "ai_decisions": (True, False, True, False),
 }
 
 
