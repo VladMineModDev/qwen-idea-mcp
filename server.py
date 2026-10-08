@@ -1,8 +1,8 @@
 """
-qwen-idea-mcp v1.7 — MCP-сервер для ИИ-разработки Minecraft-модов (NeoForge/Fabric/Forge)
+qwen-idea-mcp v1.8 — MCP-сервер для ИИ-разработки Minecraft-модов (NeoForge/Fabric/Forge)
 через IntelliJ IDEA: файлы с бэкапами, Gradle, логи/краш-репорты, GUI-автоматизация,
 детект формата мода (probe_mod), журнал событий для IDEA-плагина (ai_events.jsonl).
-Все инструменты несут MCP-аннотации (readOnly/destructive/idempotent/openWorld).
+Все инструменты несут MCP-аннотации (readOnly/destructive/idempotent/openWorld) как литералы.
 Конфигурация: mod_config.json (или env QWEN_MCP_CONFIG), автодетект JAVA_HOME и IDEA.
 Транспорты: python server.py sse | streamable-http | stdio
 """
@@ -35,24 +35,6 @@ DEBUG_LOG = SERVER_ROOT / "server_debug.log"
 EVENTS_FILE = SERVER_ROOT / "ai_events.jsonl"
 CONFIG_FILE = Path(os.environ.get("QWEN_MCP_CONFIG",
                                   str(SERVER_ROOT / "mod_config.json")))
-
-# ---------- MCP-аннотации инструментов (spec 2025-06-18) ----------
-A_READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
-                         idempotentHint=True, openWorldHint=False)
-A_READ_OPEN = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
-                              idempotentHint=True, openWorldHint=True)
-A_CONF = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
-                         idempotentHint=True, openWorldHint=False)
-A_OVERWRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
-                              idempotentHint=True, openWorldHint=False)
-A_DESTR = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
-                          idempotentHint=False, openWorldHint=False)
-A_DESTR_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
-                               idempotentHint=False, openWorldHint=True)
-A_OPEN_ACT = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
-                             idempotentHint=False, openWorldHint=True)
-A_OPEN_IDEM = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
-                              idempotentHint=True, openWorldHint=True)
 
 
 def _detect_java_home() -> str:
@@ -229,7 +211,6 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _decode_bytes(b: bytes) -> str:
-    """Пробуем UTF-8, fallback на cp1251 (Windows-консоли пишут кириллицу в cp1251)."""
     try:
         return b.decode("utf-8")
     except UnicodeDecodeError:
@@ -255,9 +236,7 @@ def ping() -> str:
 @traced
 def configure(project_root: str, java_home: str = "", idea_path: str = "",
               loader: str = "") -> str:
-    """Первичная настройка (один раз): сохранить пути в mod_config.json и применить
-    без перезапуска демона. ИИ: спроси у пользователя абсолютный путь к проекту мода
-    и вызови этот инструмент."""
+    """Первичная настройка: сохранить пути в mod_config.json и применить без перезапуска."""
     global PROJECT_ROOT, DEFAULT_JAVA_HOME
     p = Path(project_root).resolve()
     if not p.is_dir():
@@ -400,12 +379,11 @@ def grep(pattern: str, rel_dir: str = "", file_glob: str = "*.java",
 
 # ---------- gradle и логи ----------
 
-@mcp.tool(annotations=A_OPEN_ACT)
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 @traced
 async def run_gradle(task: str, background: bool = False, timeout: int = 900,
                      java_home: str = "") -> str:
-    """Запустить задачу gradle (build, compileJava, runClient...).
-    background=True — отделить процесс (для runClient), вывод идёт в logs/run_*.log."""
+    """Запустить задачу gradle (build, compileJava, runClient...)."""
     jh = java_home or DEFAULT_JAVA_HOME
     if not jh:
         return "ERROR: java_home not set: задай в mod_config.json или переменную JAVA_HOME"
@@ -482,9 +460,7 @@ def stop_client() -> str:
 @traced
 def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
              filter_regex: str = "") -> str:
-    """Читает логи. source: latest | debug | crash | run.
-    latest/debug — логи клиента; crash — свежий краш-репорт (читай с mode='head');
-    run — лог фонового runClient. filter_regex — показать только строки с шаблоном."""
+    """Читает логи. source: latest | debug | crash | run."""
     lg = CFG["logs"]
     if source == "latest":
         p = PROJECT_ROOT / lg["client_latest"]
@@ -522,8 +498,7 @@ def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 @traced
 def screenshot(target: str = "minecraft", save_path: str = "") -> str:
-    """Скриншот окна (target: 'minecraft' | 'idea' | 'screen' | подстрока заголовка).
-    save_path — куда сохранить PNG; если пусто, возвращается base64."""
+    """Скриншот окна (target: 'minecraft' | 'idea' | 'screen' | подстрока заголовка)."""
     try:
         win = None
         if target != "screen":
@@ -675,7 +650,7 @@ def show_in_idea(rel_path: str, line: int = 0) -> str:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def recent_activity(lines: int = 30) -> str:
-    """Журнал вызовов сервера (кто, что и когда вызвал) — живое наблюдение за работой ИИ."""
+    """Журнал вызовов сервера (кто, что и когда вызвал)."""
     if not DEBUG_LOG.is_file():
         return "(empty)"
     ls = DEBUG_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -686,7 +661,7 @@ def recent_activity(lines: int = 30) -> str:
 @traced
 def ai_events(last_n: int = 20, file_filter: str = "") -> str:
     """Структурный журнал действий ИИ (jsonl): tool, file, lines, summary.
-    Этот же файл читает будущий IDEA-плагин (контракт ai_events.jsonl)."""
+    Этот же файл читает IDEA-плагин Qwen Presence (контракт ai_events.jsonl)."""
     if not EVENTS_FILE.is_file():
         return "(empty)"
     ls = EVENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -698,8 +673,7 @@ def ai_events(last_n: int = 20, file_filter: str = "") -> str:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def project_brief() -> str:
-    """Динамическое досье проекта: загрузчик, mod id, пакеты, ресурсы.
-    ИИ получает контекст отсюда, а не из жёстких инструкций."""
+    """Динамическое досье проекта: загрузчик, mod id, пакеты, ресурсы."""
     if not CFG["project_root"]:
         return "ERROR: project not configured — вызови configure(project_root=...)"
     info = {"loader": CFG["loader"], "project_root": str(PROJECT_ROOT),
@@ -777,8 +751,7 @@ def _probe(rd) -> list:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 @traced
 def probe_mod(target: str) -> str:
-    """Определить формат мода (.jar или папка исходников): загрузчик, modId, версия, версия MC.
-    Кирпич 1 универсального загрузчика ModRun."""
+    """Определить формат мода (.jar или папка исходников): загрузчик, modId, версия, версия MC."""
     p = Path(target).resolve()
     if not p.exists():
         return f"ERROR: not found: {target}"
