@@ -113,6 +113,7 @@ SERVER_INSTRUCTIONS = (
     "перед новым runClient всегда stop_client(); краш-репорты с mode='head'; "
     "бэкапы правок автоматические; после важной правки вызывай show_in_idea."
     "После правок проверяй ai_decisions(): rejected означает откат правки человеком — переделай иначе. "
+    "логи сборки читай через get_logs(source='gradle'); "
 )
 
 mcp = FastMCP("qwen-idea-mcp", host=CFG["host"], port=CFG["port"],
@@ -425,6 +426,12 @@ async def run_gradle(task: str, background: bool = False, timeout: int = 900,
     fh.close()
     out = _decode_bytes(log_path.read_bytes())
     tail = "\n".join(out.splitlines()[-120:])
+    if code != 0:
+        rx_err = re.compile(r"error:|ERROR|FAILURE|Exception|What went wrong",
+                        re.IGNORECASE)
+        err_lines = [l for l in out.splitlines() if rx_err.search(l)]
+    if err_lines:
+        tail += "\n--- error excerpt ---\n" + "\n".join(err_lines[-40:])
     hint = ""
     if code != 0 and "JAVA_HOME" in out:
         hint = f"\n[HINT] Проблема с JAVA_HOME ({jh})."
@@ -463,7 +470,10 @@ def stop_client() -> str:
 @traced
 def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
              filter_regex: str = "") -> str:
-    """Читает логи. source: latest | debug | crash | run."""
+    """Читает логи. source: latest | debug | crash | run | gradle.
+    latest/debug — логи клиента; crash — свежий краш-репорт (читай с mode='head');
+    run — лог фонового runClient; gradle — полный лог последней сборки gradle.
+    filter_regex — показать только строки с шаблоном."""
     lg = CFG["logs"]
     if source == "latest":
         p = PROJECT_ROOT / lg["client_latest"]
@@ -476,6 +486,11 @@ def get_logs(source: str = "latest", lines: int = 150, mode: str = "tail",
         if not cands:
             return "No crash reports found."
         p = cands[-1]
+    elif source == "gradle":
+        logs = sorted(LOG_ROOT.glob("gradle_*.log"), key=lambda f: f.stat().st_mtime)
+        if not logs:
+            return "No gradle logs yet."
+        p = logs[-1]
     elif source == "run":
         st = _load_state()
         p = Path(st["log"]) if st.get("log") else None

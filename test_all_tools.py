@@ -1,7 +1,7 @@
 """
 Автотест всех инструментов qwen-idea-mcp.
 Обходит Qwen-клиент, подключается к SSE-демону напрямую.
-Использование: .venv\Scripts\activate  →  python test_all_tools.py
+Использование: .venv/Scripts/activate  ->  python test_all_tools.py
 """
 import asyncio
 import os
